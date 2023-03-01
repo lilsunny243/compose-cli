@@ -19,23 +19,48 @@ package metrics
 import (
 	"os"
 	"strings"
+	"sync"
+	"time"
+
+	"github.com/docker/compose/v2/pkg/utils"
 
 	"github.com/docker/compose-cli/cli/metrics/metadata"
-	"github.com/docker/compose/v2/pkg/utils"
 )
 
-func (c *client) Track(context string, args []string, status string) {
+func (c *client) Track(cmd CmdResult) {
 	if isInvokedAsCliBackend() {
 		return
 	}
-	command := GetCommand(args)
-	if command != "" {
-		c.Send(Command{
-			Command: command,
-			Context: context,
-			Source:  c.getMetadata(CLISource, args),
-			Status:  status,
-		})
+
+	var wg sync.WaitGroup
+	usageCmd := NewCommandUsage(cmd)
+	if usageCmd != nil {
+		usageCmd.Source = c.getMetadata(CLISource, cmd.Args)
+		wg.Add(1)
+		go func() {
+			c.reporter.Heartbeat(*usageCmd)
+			wg.Done()
+		}()
+	}
+
+	eventCmd := NewDockerCLIEvent(cmd)
+	if eventCmd != nil {
+		wg.Add(1)
+		go func() {
+			c.reporter.Event(*eventCmd)
+			wg.Done()
+		}()
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		wg.Wait()
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(Timeout):
 	}
 }
 
@@ -98,4 +123,17 @@ func GetCommand(args []string) string {
 		}
 	}
 	return result
+}
+
+func NewCommandUsage(cmd CmdResult) *CommandUsage {
+	command := GetCommand(cmd.Args)
+	if command == "" {
+		return nil
+	}
+
+	return &CommandUsage{
+		Command: command,
+		Context: cmd.ContextType,
+		Status:  cmd.Status,
+	}
 }
