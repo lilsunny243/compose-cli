@@ -27,15 +27,15 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"time"
+
+	"github.com/google/shlex"
+	"github.com/spf13/cobra"
 
 	apicontext "github.com/docker/compose-cli/api/context"
 	"github.com/docker/compose-cli/api/context/store"
 	"github.com/docker/compose-cli/cli/metrics"
 	"github.com/docker/compose-cli/cli/mobycli/resolvepath"
-	"github.com/docker/compose/v2/pkg/compose"
-	"github.com/docker/compose/v2/pkg/utils"
-	"github.com/google/shlex"
-	"github.com/spf13/cobra"
 )
 
 var delegatedContextTypes = []string{store.DefaultContextType}
@@ -72,33 +72,58 @@ func mustDelegateToMoby(ctxType string) bool {
 }
 
 // Exec delegates to com.docker.cli if on moby context
-func Exec(root *cobra.Command) {
-	metricsClient := metrics.NewClient()
+func Exec(_ *cobra.Command) {
+	metricsClient := metrics.NewDefaultClient()
 	metricsClient.WithCliVersionFunc(func() string {
 		return CliVersion()
 	})
+	start := time.Now().UTC()
 	childExit := make(chan bool)
 	err := RunDocker(childExit, os.Args[1:]...)
 	childExit <- true
+	duration := time.Since(start)
 	if err != nil {
 		if exiterr, ok := err.(*exec.ExitError); ok {
 			exitCode := exiterr.ExitCode()
-			metricsClient.Track(store.DefaultContextType, os.Args[1:], compose.ByExitCode(exitCode).MetricsStatus)
+			metricsClient.Track(
+				metrics.CmdResult{
+					ContextType: store.DefaultContextType,
+					Args:        os.Args[1:],
+					Status:      metrics.FailureCategoryFromExitCode(exitCode).MetricsStatus,
+					ExitCode:    exitCode,
+					Start:       start,
+					Duration:    duration,
+				},
+			)
 			os.Exit(exitCode)
 		}
-		metricsClient.Track(store.DefaultContextType, os.Args[1:], compose.FailureStatus)
+		metricsClient.Track(
+			metrics.CmdResult{
+				ContextType: store.DefaultContextType,
+				Args:        os.Args[1:],
+				Status:      metrics.FailureStatus,
+				Start:       start,
+				Duration:    duration,
+			},
+		)
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 	commandArgs := os.Args[1:]
 	command := metrics.GetCommand(commandArgs)
-	if command == "build" && !metrics.HasQuietFlag(commandArgs) {
-		utils.DisplayScanSuggestMsg()
-	}
 	if command == "login" && !metrics.HasQuietFlag(commandArgs) {
 		displayPATSuggestMsg(commandArgs)
 	}
-	metricsClient.Track(store.DefaultContextType, os.Args[1:], compose.SuccessStatus)
+	metricsClient.Track(
+		metrics.CmdResult{
+			ContextType: store.DefaultContextType,
+			Args:        os.Args[1:],
+			Status:      metrics.SuccessStatus,
+			ExitCode:    0,
+			Start:       start,
+			Duration:    duration,
+		},
+	)
 
 	os.Exit(0)
 }

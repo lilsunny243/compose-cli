@@ -17,27 +17,48 @@
 package metrics
 
 import (
-	"bytes"
-	"context"
-	"encoding/json"
-	"net"
-	"net/http"
 	"os"
 	"time"
 )
 
+// EnvVarDebugMetricsPath is an optional environment variable used to debug
+// metrics by triggering all events to also be written as JSON lines to the
+// specified file path.
+const EnvVarDebugMetricsPath = "DOCKER_METRICS_DEBUG_LOG"
+
+// Timeout is the maximum amount of time we'll wait for metrics sending to be
+// acknowledged before giving up.
+const Timeout = 50 * time.Millisecond
+
+// CmdResult provides details about process execution.
+type CmdResult struct {
+	// ContextType is `moby` for Docker or the name of a cloud provider.
+	ContextType string
+	// Args minus the process name (argv[0] aka `docker`).
+	Args []string
+	// Status based on exit code as a descriptive value.
+	//
+	// Deprecated: used for usage, events rely exclusively on exit code.
+	Status string
+	// ExitCode is 0 on success; otherwise, failure.
+	ExitCode int
+	// Start time of the process (UTC).
+	Start time.Time
+	// Duration of process execution.
+	Duration time.Duration
+}
+
 type client struct {
 	cliversion *cliversion
-	httpClient *http.Client
+	reporter   Reporter
 }
 
 type cliversion struct {
-	version string
-	f       func() string
+	f func() string
 }
 
-// Command is a command
-type Command struct {
+// CommandUsage reports a CLI invocation for aggregation.
+type CommandUsage struct {
 	Command string `json:"command"`
 	Context string `json:"context"`
 	Source  string `json:"source"`
@@ -58,36 +79,51 @@ type Client interface {
 	// WithCliVersionFunc sets the docker cli version func
 	// that returns the docker cli version (com.docker.cli)
 	WithCliVersionFunc(f func() string)
-	// Send sends the command to Docker Desktop. Note that the function doesn't
-	// return anything, not even an error, this is because we don't really care
-	// if the metrics were sent or not. We only fire and forget.
-	Send(Command)
-	// Track sends the tracking analytics to Docker Desktop
-	Track(context string, args []string, status string)
+	// SendUsage sends the command to Docker Desktop.
+	//
+	// Note that metric collection is best-effort, so any errors are ignored.
+	SendUsage(CommandUsage)
+	// Track creates an event for a command execution and reports it.
+	Track(CmdResult)
 }
 
-// NewClient returns a new metrics client
-func NewClient() Client {
+// NewClient returns a new metrics client that will send metrics using the
+// provided Reporter instance.
+func NewClient(reporter Reporter) Client {
 	return &client{
 		cliversion: &cliversion{},
-		httpClient: &http.Client{
-			Transport: &http.Transport{
-				DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
-					return conn()
-				},
-			},
-		},
+		reporter:   reporter,
 	}
+}
+
+// NewDefaultClient returns a new metrics client that will send metrics using
+// the default Reporter configuration, which reports via HTTP, and, optionally,
+// to a local file for debugging. (No format guarantees are made!)
+func NewDefaultClient() Client {
+	httpClient := newHTTPClient()
+
+	var reporter Reporter = NewHTTPReporter(httpClient)
+	if metricsLogPath := os.Getenv(EnvVarDebugMetricsPath); metricsLogPath != "" {
+		if f, err := os.OpenFile(metricsLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err != nil {
+			panic(err)
+		} else {
+			reporter = NewMuxReporter(
+				NewWriterReporter(f),
+				reporter,
+			)
+		}
+	}
+	return NewClient(reporter)
 }
 
 func (c *client) WithCliVersionFunc(f func() string) {
 	c.cliversion.f = f
 }
 
-func (c *client) Send(command Command) {
+func (c *client) SendUsage(command CommandUsage) {
 	result := make(chan bool, 1)
 	go func() {
-		postMetrics(command, c)
+		c.reporter.Heartbeat(command)
 		result <- true
 	}()
 
@@ -95,13 +131,6 @@ func (c *client) Send(command Command) {
 	// Posting metrics without Desktop listening returns in less than a ms, and a handful of ms (often <2ms) when Desktop is listening
 	select {
 	case <-result:
-	case <-time.After(50 * time.Millisecond):
-	}
-}
-
-func postMetrics(command Command, c *client) {
-	req, err := json.Marshal(command)
-	if err == nil {
-		_, _ = c.httpClient.Post("http://localhost/usage", "application/json", bytes.NewBuffer(req))
+	case <-time.After(Timeout):
 	}
 }
