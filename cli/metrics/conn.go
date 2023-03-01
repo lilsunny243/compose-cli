@@ -1,5 +1,5 @@
 /*
-   Copyright 2020 Docker Compose CLI authors
+   Copyright 2022 Docker Compose CLI authors
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
@@ -14,22 +14,20 @@
    limitations under the License.
 */
 
-package login
+package metrics
 
 import (
-	"os"
-	"path/filepath"
-	"testing"
-
-	"gotest.tools/v3/assert"
+	"context"
+	"net"
+	"net/http"
 )
 
-func TestClearErrorMessageIfNotAlreadyLoggedIn(t *testing.T) {
-	dir, err := os.MkdirTemp("", "test_store")
-	assert.NilError(t, err)
-	t.Cleanup(func() {
-		_ = os.RemoveAll(dir)
-	})
-	_, _, err = getClientSetupDataImpl(filepath.Join(dir, tokenStoreFilename))
-	assert.ErrorContains(t, err, "not logged in to azure, you need to run \"docker login azure\" first")
+func newHTTPClient() *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+				return conn()
+			},
+		},
+	}
 }

@@ -18,7 +18,6 @@ package main
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -206,7 +205,7 @@ func TestContextMetrics(t *testing.T) {
 			`{"command":"context use","context":"moby","source":"cli","status":"success"}`,
 			`{"command":"ps","context":"local","source":"cli","status":"success"}`,
 			`{"command":"stop","context":"local","source":"cli","status":"failure"}`,
-			`{"command":"context use","context":"local","source":"cli","status":"success"}`,
+			`{"command":"context use","context":"moby","source":"cli","status":"success"}`,
 			`{"command":"ps","context":"local","source":"cli","status":"success"}`,
 			`{"command":"context ls","context":"moby","source":"cli","status":"success"}`,
 		}, usage)
@@ -250,7 +249,7 @@ func TestContextRemove(t *testing.T) {
 		res = c.RunDockerOrExitError("context", "rm", "test-context-rm")
 		res.Assert(t, icmd.Expected{
 			ExitCode: 1,
-			Err:      "cannot delete current context",
+			Err:      "test-context-rm: context is in use, set -f flag to force remove",
 		})
 	})
 
@@ -326,13 +325,13 @@ func TestLoginCommandDelegation(t *testing.T) {
 
 func TestMissingExistingCLI(t *testing.T) {
 	t.Parallel()
-	home, err := ioutil.TempDir("", "")
+	home, err := os.MkdirTemp("", "")
 	assert.NilError(t, err)
 	t.Cleanup(func() {
 		_ = os.RemoveAll(home)
 	})
 
-	bin, err := ioutil.TempDir("", "")
+	bin, err := os.MkdirTemp("", "")
 	assert.NilError(t, err)
 	t.Cleanup(func() {
 		_ = os.RemoveAll(bin)
